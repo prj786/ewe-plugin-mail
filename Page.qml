@@ -22,7 +22,7 @@ Column {
 
     spacing: Theme.spaceS
     // setTab("mail") used to fetch when an account is there
-    onPanelOpenChanged: if (panelOpen) { Inbox.probeApp(); if (Inbox.available) Inbox.fetch() }
+    onPanelOpenChanged: if (panelOpen && Date.now() - Inbox.lastFetch > 30 * 1000) Inbox.fetch()
 
     QsPageHead {
         title: Inbox.available ? "Inbox" : "Mail"
