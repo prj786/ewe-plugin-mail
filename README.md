@@ -13,11 +13,19 @@ for mail that was already there).
     ewe-plugin install ewe.mail
     qs ipc call quicksettings tab mail       # the page (the key the shell always used)
 
-Two sources, one inbox — IMAP wins when both are set up:
+With **ewe Mail** installed (`ewe-mail`, the app `ewe-mail-app`), a click on a
+row or on a new-mail notification opens that message in ewe Mail, and the
+page's button is **Open ewe Mail**; without it they open the browser (Gmail)
+or your `mailto:` handler, as before.
 
-- **any IMAP account** — added in ewe Sync → Mail (the core `ewe-mail` tool
-  keeps the account in `ewe.conf` and the password in the keyring; this
-  plugin only runs `ewe-mail status` and `ewe-mail unseen`).
+Two sources, one inbox — every IMAP account and Gmail together (the count
+adds up, the rows interleave by date); `source` in `status` still names IMAP
+first when both are set up:
+
+- **any IMAP account, as many as you add** — in ewe Sync → Mail (the core
+  `ewe-mail` tool keeps the accounts in `ewe.conf` and the passwords in the
+  keyring; this plugin only runs `ewe-mail status` and `ewe-mail unseen
+  --all`, which an older `ewe-mail` answers for its one account).
 - **Gmail** — through your own Google client connected in ewe Sync (ewe ships
   no Google client). The plugin asks the core broker `ewe-auth token` for a
   short-lived access token; the refresh token never leaves the keyring and

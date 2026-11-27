@@ -13,8 +13,12 @@ import qs
 //     never leaves the keyring. Was the Gmail half of the shell's Google.qml
 //     (unread badge, History-API cursor for genuinely NEW mail, the list,
 //     the notifications); OAuth, Calendar, Drive and settings sync stay core.
-// IMAP wins when it is configured. New-mail notifications fire once per
-// message id, persisted so a restart never re-notifies; the toggle is shared.
+// IMAP wins `source` when it is configured; with Gmail signed in as well,
+// the count and the rows are both inboxes together (every IMAP account:
+// `ewe-mail unseen --all`). New-mail notifications fire once per message id,
+// persisted so a restart never re-notifies; the toggle is shared.
+// With ewe Mail installed (`ewe-mail-app`), a row, a notification and the
+// head button open it, at the message — else the browser / mailto: as before.
 // Rule 2: nothing secret is ever written — the state files hold ids, flags,
 // counts and the latest rows; tokens live in memory only.
 QtObject {
@@ -25,11 +29,23 @@ QtObject {
     readonly property string eweMail: Quickshell.env("HOME") + "/.config/quickshell/../../bin/ewe-mail"
     readonly property string eweAuth: Quickshell.env("HOME") + "/.config/quickshell/../../bin/ewe-auth"
 
+    // ── ewe Mail, the app: installed or not (asked at start and when the
+    // Inbox page opens — a pacman -S between two looks is seen) ──
+    property bool hasApp: false
+    function probeApp() { _appProbe.running = false; _appProbe.running = true }
+    property Process _appProbe: Process {
+        running: true
+        command: ["sh", "-c", "command -v ewe-mail-app >/dev/null 2>&1 && echo yes || echo no"]
+        stdout: StdioCollector { onStreamFinished: ml.hasApp = this.text.trim() === "yes" }
+    }
+
     // ── IMAP account (from ewe-mail status) ──
     property bool probed: false
     property bool imapConfigured: false
     property string imapHost: ""
     property string imapUser: ""
+    property string imapEmail: ""         // the first account's address (ewe-mail 0.51+), else the user when it is one
+    property string _imapFirst: ""        // the first account's id: its rows keep the plain-id notified keys
     property bool imapKeyring: true      // the password is in the keyring
     property int imapUnread: 0
     property var imapList: []
@@ -41,17 +57,20 @@ QtObject {
     property bool gmailProbed: false
     property bool gmailConfigured: false // the broker has a client file
     property bool gmailSignedIn: false
+    property string gmailEmail: ""       // the signed-in address: Gmail rows' account is google:<it>
     property string busy: ""             // "" | "token"
 
     // ── the one shape the widgets read ──
     readonly property string source: imapConfigured ? "imap" : (gmailSignedIn ? "gmail" : "")
     readonly property bool available: source !== ""
     readonly property string title: source === "imap" ? imapUser : source === "gmail" ? "Gmail" : "Mail"
-    readonly property int unread: source === "imap" ? imapUnread : source === "gmail" ? mailUnread : 0
-    readonly property var list: source === "imap" ? imapList : source === "gmail" ? mailList : []
+    // both set up: one inbox — the counts add up, the rows interleave by date
+    readonly property bool both: imapConfigured && gmailSignedIn
+    readonly property int unread: both ? imapUnread + mailUnread : source === "imap" ? imapUnread : source === "gmail" ? mailUnread : 0
+    readonly property var list: both ? ml._merge(imapList, mailList) : source === "imap" ? imapList : source === "gmail" ? mailList : []
     readonly property string state: source === "imap" ? imapState : source === "gmail" ? mailState : ""
     readonly property string error: source === "imap" ? imapError : source === "gmail" ? mailError : ""
-    readonly property bool needsReconnect: source === "gmail" && mailState === "scope"
+    readonly property bool needsReconnect: gmailSignedIn && mailState === "scope"
     // Notifications for new mail: the plugin's `notify` setting (manifest;
     // Komble → Plugins → Mail → Options), also flipped by the bell on the
     // Inbox page and `mail setNotify` — those write the setting through
@@ -74,22 +93,41 @@ QtObject {
     // a Gmail re-consent happens in the account app (ewe-sync owns Google
     // sign-in since RFC-005/006; the shell's `google signIn` is not ours to call)
     function reconnect() {
-        if (ml.source !== "gmail") return
-        if (!Shell.launch("io.github.prj786.ewe-sync")) Quickshell.execDetached(["ewe-sync"])
+        if (!ml.gmailSignedIn) return
+        // straight to its Google page (a running ewe Sync takes the link)
+        Quickshell.execDetached(["ewe-sync", "--pane", "google"])
     }
     function fetch() {
-        if (source === "imap") ml.fetchImap()
-        else if (source === "gmail") ml.fetchMail()
+        if (ml.imapConfigured) ml.fetchImap()
+        if (ml.gmailSignedIn) ml.fetchMail()
+    }
+    // one row of the list: ewe Mail at that message, else what 1.2 did
+    function openRow(r) {
+        if (!r) return
+        var acct = ml._rowAccount(r)
+        if (ml.hasApp && acct !== "") {
+            Quickshell.execDetached(["ewe-mail-app", "--open", acct, "INBOX", String(r.id)])
+            return
+        }
+        if (r.source === "gmail" || (!r.source && ml.source === "gmail")) ml.openMail(r.id)
+        else Quickshell.execDetached(["xdg-open", "mailto:"])
     }
     function open(id) {
+        var rows = ml.list
+        for (var i = 0; i < rows.length; i++)
+            if (String(rows[i].id) === String(id)) { ml.openRow(rows[i]); return }
         if (source === "gmail") ml.openMail(id)
         else Quickshell.execDetached(["xdg-open", "mailto:"])
     }
     function openInbox() {
+        if (ml.hasApp) {
+            if (!Shell.launch("io.github.prj786.ewe-mail")) Quickshell.execDetached(["ewe-mail-app"])
+            return
+        }
         if (source === "gmail") Quickshell.execDetached(["xdg-open", "https://mail.google.com/mail/u/0/"])
         else Quickshell.execDetached(["xdg-open", "mailto:"])
     }
-    readonly property string inboxLabel: source === "gmail" ? "Open Gmail" : "Open mail"
+    readonly property string inboxLabel: ml.hasApp ? "Open ewe Mail" : source === "gmail" ? "Open Gmail" : "Open mail"
     readonly property string hint: "Add a mail account or connect Google in ewe Sync to see mail here."
 
     // the `mail status` snapshot — byte-compatible with the shell's: ewe-settings reads it
@@ -101,7 +139,36 @@ QtObject {
         })
     }
     // `mail refresh`: re-read both accounts, then fetch
-    function refresh() { ml.probe(); ml.probeGmail(); ml.fetch() }
+    function refresh() { ml.probe(); ml.probeGmail(); ml.probeApp(); ml.fetch() }
+
+    // both inboxes as one list, newest first
+    function _merge(a, b) {
+        return (a || []).concat(b || []).sort(function (x, y) { return (y.date || 0) - (x.date || 0) })
+    }
+    function _imapAccount() { return "imap:" + String(ml.imapEmail || ml.imapUser).toLowerCase() }
+    // rows restored from a 1.2 state file carry no account: the source says it
+    function _rowAccount(r) {
+        if (r.account) return String(r.account)
+        var gmail = r.source === "gmail" || (!r.source && ml.source === "gmail")
+        if (gmail) return ml.gmailEmail ? "google:" + ml.gmailEmail.toLowerCase() : ""
+        return ml.imapConfigured ? (ml._imapFirst || ml._imapAccount()) : ""
+    }
+    // a new message: with ewe Mail, clicking the notification opens it there
+    // (notify-send waits for the click; an hour later it lets go). The text
+    // goes as arguments, never into the script, and the body is escaped for
+    // the shell's markup-reading notification server.
+    function _toast(app, title, body, row) {
+        var acct = row ? ml._rowAccount(row) : ""
+        if (ml.hasApp && acct !== "" && row.id) {
+            var esc = String(body || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            Quickshell.execDetached(["sh", "-c",
+                'a=$(timeout 3600 notify-send -a "ewe Mail" -i io.github.prj786.ewe-mail -A default=Open -- "$1" "$2" 2>/dev/null); '
+                + '[ "$a" = default ] && exec ewe-mail-app --open "$3" INBOX "$4"',
+                "ewe-mail-notify", String(title || "New mail"), esc, acct, String(row.id)])
+            return
+        }
+        Quickshell.execDetached(["notify-send", "-a", app, "-i", "mail-unread", title, body])
+    }
 
     // ══ IMAP ══════════════════════════════════════════════════════════════════
     function probe() { _statusProc.running = false; _statusProc.running = true }
@@ -115,6 +182,7 @@ QtObject {
                     var j = JSON.parse(this.text)
                     ml.imapConfigured = !!j.configured
                     ml.imapHost = String(j.host || ""); ml.imapUser = String(j.user || "")
+                    ml.imapEmail = String(j.email || (String(j.user || "").indexOf("@") > 0 ? j.user : ""))
                     ml.imapKeyring = j.keyring !== false
                 } catch (e) { ml.imapConfigured = false }
                 ml.probed = true
@@ -139,7 +207,9 @@ QtObject {
         _unseenProc.running = false; _unseenProc.running = true
     }
     property Process _unseenProc: Process {
-        command: ["python3", ml.eweMail, "unseen", "--limit", "10"]
+        // --all: every account, each row with its `account` (an older
+        // ewe-mail ignores the flag and answers for its one account)
+        command: ["python3", ml.eweMail, "unseen", "--all", "--limit", "10"]
         stdout: StdioCollector {
             onStreamFinished: {
                 ml._fetching = false
@@ -148,7 +218,13 @@ QtObject {
                     if (j.ok) {
                         ml.imapState = ""; ml.imapError = ""
                         ml.imapUnread = j.unread || 0
-                        ml.imapList = j.list || []
+                        ml._imapFirst = (j.accounts && j.accounts.length && j.accounts[0].id) ? String(j.accounts[0].id) : ml._imapAccount()
+                        var rows = j.list || []
+                        for (var r = 0; r < rows.length; r++) {
+                            rows[r].source = "imap"
+                            if (!rows[r].account) rows[r].account = ml._imapFirst
+                        }
+                        ml.imapList = rows
                         // judge "first fetch ever" BEFORE the stamp moves — stamped
                         // first, it never was the first fetch and every already-unread
                         // message toasted on a fresh account (2026-09-20)
@@ -220,13 +296,18 @@ QtObject {
         var fresh = []
         for (var i = 0; i < rows.length; i++) {
             var id = String(rows[i].id || "")
-            if (id === "" || ml._notified[id]) continue
-            ml._notified[id] = Date.now()
+            if (id === "") continue
+            // a UID is only unique inside its account: other accounts' rows are
+            // keyed account/uid; the first keeps the plain uid 1.2 stored
+            var acct = String(rows[i].account || "")
+            var key = (acct !== "" && acct !== ml._imapFirst) ? acct + "/" + id : id
+            if (ml._notified[key]) continue
+            ml._notified[key] = Date.now()
             if (!first) fresh.push(rows[i])
         }
         if (!ml.notify || fresh.length === 0) return
         for (var f = 0; f < Math.min(fresh.length, ml.notifyBurst); f++)
-            Quickshell.execDetached(["notify-send", "-a", "Mail", "-i", "mail-unread", fresh[f].from || "New mail", fresh[f].subject || ""])
+            ml._toast("Mail", fresh[f].from || "New mail", fresh[f].subject || "", fresh[f])
         if (fresh.length > ml.notifyBurst)
             Quickshell.execDetached(["notify-send", "-a", "Mail", "-i", "mail-unread", "New mail", (fresh.length - ml.notifyBurst) + " more new messages in your inbox."])
     }
@@ -253,6 +334,7 @@ QtObject {
                     var j = JSON.parse(this.text)
                     ml.gmailConfigured = !!j.configured
                     ml.gmailSignedIn = !!j.signed_in
+                    ml.gmailEmail = String((j.profile && j.profile.email) || "")
                 } catch (e) { /* the broker always prints JSON; treat garbage (or no broker) as signed-out */
                     ml.gmailConfigured = false; ml.gmailSignedIn = false
                 }
@@ -512,15 +594,15 @@ QtObject {
             cb({
                 id: j.id, from: nice, subject: subject || "(no subject)",
                 snippet: j.snippet || "", date: Number(j.internalDate || 0),
-                unread: (j.labelIds || []).indexOf("UNREAD") >= 0
+                unread: (j.labelIds || []).indexOf("UNREAD") >= 0,
+                source: "gmail", account: ml.gmailEmail ? "google:" + ml.gmailEmail.toLowerCase() : ""
             })
         })
     }
     function _notifyMail(id) {
         ml._mailMeta(id, function (row) {
             if (!row) return
-            Quickshell.execDetached(["notify-send", "-a", "Gmail", "-i", "mail-unread",
-                row.from || "New mail", (row.subject || "") + (row.snippet ? "\n" + row.snippet : "")])
+            ml._toast("Gmail", row.from || "New mail", (row.subject || "") + (row.snippet ? "\n" + row.snippet : ""), row)
         })
     }
     function openMail(id) {
